@@ -88,7 +88,7 @@ void MainWindow::RefreshSource(const BankSource &source, bool ready, bool hasEng
     if (source.IsLoose()) {
         description = L"MPBs: " + std::to_wstring(source.Mpbs().size()) + L" selected.";
     } else if (source.GetMode() == BankSource::Mode::MltBundle) {
-        description = L"MLT: " + source.Mlt().filename().wstring() + L" - uses its own memory layout and embedded banks/FX.";
+        description = L"MLT: " + source.Mlt().filename().wstring() + L" - uses embedded banks.";
     }
     SetWindowTextW(sourceLabel, description.c_str());
 
