@@ -1,0 +1,13 @@
+/build*/
+/out/
+/.vs/
+CMakeUserPresets.json
+*.log
+*.etl
+*.dmp
+*.drv
+*.mpb
+*.fpb
+*.fob
+*.mdb
+*.mlt

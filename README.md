@@ -1,0 +1,3 @@
+# ManateeHost
+
+A manatee.drv 'host' that provides a MIDI virtual device to help with editing or creating MIDIs for Rez (and it should work for other Dreamcast games that use Manatee version 2). AICA/ARM emulation provided by [Highly Theoretical](https://gitlab.com/kode54/highly_theoretical/) and virtual MIDI provided by [Windows MIDI Services](https://github.com/microsoft/MIDI) - this just glues the two. Currently Windows-only - in hindsight, I should probably have built this on libremidi.
