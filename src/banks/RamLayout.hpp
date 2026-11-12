@@ -28,10 +28,12 @@ class RamLayout {
     public:
         static RamLayout FromMlt(const Bytes &bytes);
         static RamLayout FromBanks(const std::vector<Bytes> &banks, const Bytes &fpb = {}, const Bytes &fob = {});
+        void ReplaceMpb(unsigned slot, Bytes mpb);
         const std::vector<LayoutEntry> &Entries() const { return entries; }
 
     private:
         explicit RamLayout(std::vector<LayoutEntry> entries) : entries(std::move(entries)) {}
+        LayoutEntry &CheckMpbReplacement(unsigned slot, const Bytes &mpb);
         std::vector<LayoutEntry> entries;
 
         friend class Engine;

@@ -188,6 +188,24 @@ RamLayout RamLayout::FromMlt(const Bytes &bytes) {
     return RamLayout(parseMlt(bytes));
 }
 
+// check the replacement and return its existing MPB slot
+LayoutEntry &RamLayout::CheckMpbReplacement(unsigned slot, const Bytes &mpb) {
+    auto entry = std::find_if(entries.begin(), entries.end(), [slot](const LayoutEntry &candidate) {
+        return candidate.id.type == ResourceType::MPB && candidate.id.slot == slot;
+    });
+    if (entry == entries.end())
+        throw std::runtime_error("No MPB slot exists with that bank number.");
+    if (!isMpb(mpb))
+        throw std::runtime_error("The replacement file is not a recognised MPB.");
+    if (mpb.size() > entry->allocation.size)
+        throw std::runtime_error("The replacement MPB is too large for this slot's allocation.");
+    return *entry;
+}
+
+void RamLayout::ReplaceMpb(unsigned slot, Bytes mpb) {
+    CheckMpbReplacement(slot, mpb).payload = std::move(mpb);
+}
+
 // construct a RAM layout from the chosen loose banks
 RamLayout RamLayout::FromBanks(const std::vector<Bytes> &banks, const Bytes &fpb, const Bytes &fob) {
     if (banks.empty() || banks.size() > 16)

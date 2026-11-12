@@ -76,8 +76,8 @@ void MainWindow::UpdateBanks(const std::vector<LayoutEntry> &entries, const Bank
     for (const auto &e : entries)
         if (e.id.type == ResourceType::MPB) {
             auto label = L"MPB " + std::to_wstring(e.id.slot) + (e.payload ? L"" : L" (empty)");
-            if (e.id.slot < source.Mpbs().size())
-                label += L" - " + source.Mpbs()[e.id.slot].filename().wstring();
+            if (const auto *path = source.MpbPath(e.id.slot))
+                label += L" - " + path->filename().wstring();
             SendMessageW(banks, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
             slots.push_back(e.id.slot);
         }
@@ -88,7 +88,7 @@ void MainWindow::RefreshSource(const BankSource &source, bool ready, bool hasEng
     if (source.IsLoose()) {
         description = L"MPBs: " + std::to_wstring(source.Mpbs().size()) + L" selected.";
     } else if (source.GetMode() == BankSource::Mode::MltBundle) {
-        description = L"MLT: " + source.Mlt().filename().wstring() + L" - uses embedded banks.";
+        description = L"MLT: " + source.Mlt().filename().wstring();
     }
     SetWindowTextW(sourceLabel, description.c_str());
 

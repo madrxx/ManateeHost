@@ -227,19 +227,7 @@ void Engine::SelectBank(unsigned bank) {
 
 // swaps MPB into existing slot in AICA RAM
 void Engine::ReplaceBank(unsigned bank, const Bytes &mpb) {
-    LayoutEntry *entry = nullptr;
-    for (auto &candidate : layout.entries) {
-        if (candidate.id.type == ResourceType::MPB && candidate.id.slot == bank) {
-            entry = &candidate;
-            break;
-        }
-    }
-    if (!entry)
-        throw std::runtime_error("No MPB slot exists with that bank number.");
-    if (!isMpb(mpb))
-        throw std::runtime_error("The replacement file is not a recognised MPB.");
-    if (mpb.size() > entry->allocation.size)
-        throw std::runtime_error("The replacement MPB is too large for this slot's allocation.");
+    auto &entry = layout.CheckMpbReplacement(bank, mpb);
     Bytes replacement = mpb;
     
     // stop voices before overwriting memory they may be reading
@@ -250,8 +238,8 @@ void Engine::ReplaceBank(unsigned bank, const Bytes &mpb) {
     Settle(commandSettleFrames);
 
     // upload and select new mpb
-    Upload(entry->allocation.address, replacement.data(), static_cast<std::uint32_t>(replacement.size()));
-    entry->payload = std::move(replacement);
+    Upload(entry.allocation.address, replacement.data(), static_cast<std::uint32_t>(replacement.size()));
+    entry.payload = std::move(replacement);
     SelectBank(bank);
 }
 } // namespace manatee

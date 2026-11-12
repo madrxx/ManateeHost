@@ -381,8 +381,11 @@ void App::ReplaceSelectedMpb() {
         source.ReplaceMpb(slot, path);
         LoadSource(slot);
     } else {
+        auto replacementSource = source;
+        replacementSource.ReplaceMpb(slot, path);
         auto data = readFile(path);
         player.ReplaceBank(slot, data);
+        source = std::move(replacementSource);
         if (!headless)
             window.UpdateBanks(player.Entries(), source);
         ShowSelectedSlot(slot);

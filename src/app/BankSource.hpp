@@ -2,6 +2,7 @@
 #include "support/binaryFile.hpp"
 #include "banks/Mpb.hpp"
 #include "banks/RamLayout.hpp"
+#include <map>
 #include <utility>
 
 namespace manatee {
@@ -17,13 +18,18 @@ class BankSource {
         const auto &Mlt() const { return mltPath; }
         const auto &Fpb() const { return fpbPath; }
         const auto &Fob() const { return fobPath; }
+        const std::filesystem::path *MpbPath(unsigned slot) const {
+            auto it = mpbPaths.find(slot);
+            return it == mpbPaths.end() ? nullptr : &it->second;
+        }
 
         void OpenMpbs(std::vector<std::filesystem::path> paths) {
             if (paths.empty() || paths.size() > 16)
                 throw std::runtime_error("Choose 1 to 16 MPB files.");
             Clear();
             sourceMode = Mode::LooseMpbs;
-            mpbPaths = std::move(paths);
+            for (unsigned slot = 0; slot < paths.size(); ++slot)
+                mpbPaths.emplace(slot, std::move(paths[slot]));
         }
         void OpenFile(const std::filesystem::path &path) {
             const auto bytes = readFile(path);
@@ -55,22 +61,32 @@ class BankSource {
             fobPath.clear();
         }
         void ReplaceMpb(unsigned slot, std::filesystem::path path) {
-            RequireLoose();
-            mpbPaths.at(slot) = std::move(path);
+            if (Empty())
+                throw std::runtime_error("Open MPB banks or an MLT first.");
+            if (slot >= 16)
+                throw std::runtime_error("MPB slot out of range.");
+            if (IsLoose())
+                mpbPaths.at(slot) = std::move(path);
+            else
+                mpbPaths.insert_or_assign(slot, std::move(path));
         }
         RamLayout MakeLayout() const {
-            if (sourceMode == Mode::MltBundle)
-                return RamLayout::FromMlt(readFile(mltPath));
+            if (sourceMode == Mode::MltBundle) {
+                auto layout = RamLayout::FromMlt(readFile(mltPath));
+                for (const auto &[slot, path] : mpbPaths)
+                    layout.ReplaceMpb(slot, readFile(path));
+                return layout;
+            }
             RequireLoose();
             std::vector<Bytes> banks;
-            for (const auto &path : mpbPaths)
+            for (const auto &[slot, path] : mpbPaths)
                 banks.push_back(readFile(path));
             return RamLayout::FromBanks(banks, fpbPath.empty() ? Bytes{} : readFile(fpbPath), fobPath.empty() ? Bytes{} : readFile(fobPath));
         }
 
     private:
         Mode sourceMode = Mode::None;
-        std::vector<std::filesystem::path> mpbPaths;
+        std::map<unsigned, std::filesystem::path> mpbPaths;
         std::filesystem::path mltPath, fpbPath, fobPath;
 
         void RequireLoose() const {
