@@ -30,7 +30,7 @@ class AudioPlayer {
         void SelectBank(unsigned bank);
         void ReplaceBank(unsigned bank, const Bytes &mpb);
         void AllNotesOff();
-        const std::vector<MltEntry> &Entries() const;
+        const std::vector<LayoutEntry> &Entries() const;
         unsigned ProgramCount(unsigned bank);
 
     private:

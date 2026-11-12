@@ -13,7 +13,7 @@ add_library(aica STATIC vendor/highly_theoretical/arm.c vendor/highly_theoretica
 target_include_directories(aica PUBLIC vendor/highly_theoretical)
 target_compile_definitions(aica PRIVATE EMU_COMPILE EMU_LITTLE_ENDIAN YAM_DISABLE_DYNAREC)
 
-add_library(ManateeHostCore STATIC src/audio/Engine.cpp src/banks/MltLayout.cpp)
+add_library(ManateeHostCore STATIC src/audio/Engine.cpp src/banks/RamLayout.cpp)
 add_library(ManateeHost::Core ALIAS ManateeHostCore)
 target_include_directories(ManateeHostCore PUBLIC src)
 target_compile_features(ManateeHostCore PUBLIC cxx_std_20)

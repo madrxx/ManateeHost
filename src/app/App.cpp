@@ -349,10 +349,10 @@ void App::LoadSource(unsigned preferredSlot) {
     auto replacement = std::make_unique<Engine>(readFile(driverPath), source.MakeLayout());
     unsigned selected = 16;
     for (const auto &entry : replacement->Entries()) {
-        if (!entry.mpb || !entry.stored)
+        if (entry.id.type != ResourceType::MPB || !entry.payload)
             continue;
-        if (selected == 16 || entry.bank == preferredSlot)
-            selected = entry.bank;
+        if (selected == 16 || entry.id.slot == preferredSlot)
+            selected = entry.id.slot;
     }
     if (selected < 16)
         replacement->SelectBank(selected);

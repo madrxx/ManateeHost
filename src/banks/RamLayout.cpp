@@ -1,15 +1,15 @@
-#include "banks/MltLayout.hpp"
+#include "banks/RamLayout.hpp"
+#include "banks/Mpb.hpp"
+#include "manatee/AreaMap.hpp"
 #include <algorithm>
 #include <array>
 #include <string_view>
 #include <utility>
 
 namespace manatee {
-bool isMpb(std::span<const std::uint8_t> bytes) {
-    return bytes.size() >= 16 && signature(bytes, "SMPB");
-}
-
 namespace {
+constexpr std::uint32_t ramSize = 0x200000;
+
 // checks FPB program table and calculates RAM needed for the largest program
 std::uint32_t fpbWorkSize(const Bytes &fpb) {
     if (fpb.size() < 16 || !signature(fpb, "SFPB"))
@@ -63,7 +63,7 @@ void validateFob(const Bytes &fob) {
 }
 
 // MLT parser based on manatools and aitdtnn-pc-overhaul
-std::vector<MltEntry> parseMlt(const Bytes &b) {
+std::vector<LayoutEntry> parseMlt(const Bytes &b) {
     if (b.size() < 32 || !signature(b, "SMLT"))
         throw std::runtime_error("Expected an SMLT.");
 
@@ -74,8 +74,8 @@ std::vector<MltEntry> parseMlt(const Bytes &b) {
     
     const auto headerEnd = 32 + count * 32;
 
-    std::vector<MltEntry> entries;
-    std::array<bool, 84> used{}; // initialise all empty
+    std::vector<LayoutEntry> entries;
+    std::array<bool, areaMap::entryCount> used{}; // initialise all empty
     
     for (unsigned i = 0; i < count; ++i) {
         const auto *p = b.data() + 32 + i * 32; // for each entry, p points to first byte
@@ -85,25 +85,34 @@ std::vector<MltEntry> parseMlt(const Bytes &b) {
         // map locations from aitdtnn-pc-overhaul audio_renderer.cpp
         std::uint32_t map = 0;
         unsigned max = 16;
-        if (type == "SMSB")
-            map = 0x14000;
-        else if (type == "SMPB")
-            map = 0x14080;
-        else if (type == "SOSB")
-            map = 0x14100;
-        else if (type == "SPSR")
-            map = 0x14180;
-        else if (type == "SFPB") {
-            map = 0x14200;
+        ResourceType resourceType;
+        if (type == "SMSB") {
+            resourceType = ResourceType::MSB;
+            map = areaMap::msb;
+        } else if (type == "SMPB") {
+            resourceType = ResourceType::MPB;
+            map = areaMap::mpb;
+        } else if (type == "SOSB") {
+            resourceType = ResourceType::OSB;
+            map = areaMap::osb;
+        } else if (type == "SPSR") {
+            resourceType = ResourceType::PSR;
+            map = areaMap::psr;
+        } else if (type == "SFPB") {
+            resourceType = ResourceType::FPB;
+            map = areaMap::fpb;
             max = 1;
         } else if (type == "SFOB") {
-            map = 0x14280;
+            resourceType = ResourceType::FOB;
+            map = areaMap::fob;
             max = 1;
         } else if (type == "SFPW") {
-            map = 0x14288;
+            resourceType = ResourceType::FPW;
+            map = areaMap::fpw;
             max = 1;
         } else if (type == "SMDB") {
-            map = 0x14290;
+            resourceType = ResourceType::MDB;
+            map = areaMap::mdb;
             max = 2;
         } else
             throw std::runtime_error("Unknown MLT entry type: " + std::string(type));
@@ -118,8 +127,8 @@ std::vector<MltEntry> parseMlt(const Bytes &b) {
         if (bank >= max)
             throw std::runtime_error("MLT bank index out of range.");
         
-        map += bank * 8; // area map slot for this bank type and slot
-        auto index = (map - 0x14000) / 8; // index in used array
+        map += bank * areaMap::entrySize; // area map slot for this bank type and slot
+        auto index = (map - areaMap::base) / areaMap::entrySize; // index in used array
         if (used[index])
             throw std::runtime_error("Duplicate MLT bank slot.");
         used[index] = true;
@@ -131,7 +140,7 @@ std::vector<MltEntry> parseMlt(const Bytes &b) {
         
         // overlap if starts before existing range ends or existing range starts before new range ends
         for (const auto &e : entries)
-            if (address < e.address + e.allocation && e.address < address + allocation)
+            if (address < e.allocation.address + e.allocation.size && e.allocation.address < address + allocation)
                 throw std::runtime_error("Overlapping MLT RAM allocations.");
         
         // check for embedded payload with types that need one
@@ -148,55 +157,16 @@ std::vector<MltEntry> parseMlt(const Bytes &b) {
         if (stored && type == "SMPB" && !isMpb(std::span(b).subspan(offset, size)))
             throw std::runtime_error("Invalid embedded MPB.");
 
-        entries.push_back({map, address, allocation, offset, size, stored, type == "SMPB", bank});
+        std::optional<Bytes> payload;
+        if (stored)
+            payload.emplace(b.begin() + offset, b.begin() + offset + size);
+        entries.push_back({{resourceType, bank}, map, {address, allocation}, std::move(payload)});
     }
     return entries;
 }
 
-// in-memory MLT builder for constructing a MltLayout from loose MPBs, FPB, and FOB
-class MltBuilder {
-    public:
-        explicit MltBuilder(unsigned entryCount); // constructs an empty MLT with the given number of entries
-        void Add(std::string_view type, unsigned slot, const Bytes &data, std::uint32_t reserved = 0); // allocates RAM and writes entries
-        Bytes Finish(); // returns completed MLT bytes
-
-    private:
-        void Put(std::size_t offset, std::uint32_t value); // writes 32LE value to byte buffer
-        Bytes bytes;
-        unsigned expectedEntries;
-        unsigned writtenEntries = 0;
-        bool finished = false;
-        std::uint32_t nextAddress = 0x18000;
-};
-
-MltBuilder::MltBuilder(unsigned entryCount) : expectedEntries(entryCount) {
-    if (entryCount > 256)
-        throw std::runtime_error("Too many MLT entries.");
-    
-    // preparing header buffer
-    bytes.resize(32 + entryCount * 32, 0);
-    // resource tag
-    std::memcpy(bytes.data(), "SMLT", 4);
-    // version
-    Put(4, 2);
-    // number of entries
-    Put(8, entryCount);
-}
-
-// writes value into 4 existing buffer bytes in LE order
-void MltBuilder::Put(std::size_t offset, std::uint32_t value) {
-    for (unsigned n = 0; n < 4; ++n)
-        bytes[offset + n] = static_cast<std::uint8_t>(value >> (8 * n));
-}
-
-// add one resource to the layout
-void MltBuilder::Add(std::string_view type, unsigned slot, const Bytes &data, std::uint32_t reserved) {
-    if (type.size() != 4)
-        throw std::runtime_error("Resource tag must be four bytes.");
-    if (slot > 255)
-        throw std::runtime_error("MLT bank index out of range.");
-    if (finished || writtenEntries >= expectedEntries)
-        throw std::logic_error("Too many MLT entries.");
+// add a resource for loose bank layout
+void addBank(std::vector<LayoutEntry> &entries, std::uint32_t &nextAddress, ResourceId id, std::uint32_t mapAddress, const Bytes &data, std::uint32_t reserved = 0) {
     if (data.size() > ramSize - nextAddress || reserved > ramSize - nextAddress)
         throw std::runtime_error("Banks do not fit 2MiB AICA RAM.");
     
@@ -205,40 +175,21 @@ void MltBuilder::Add(std::string_view type, unsigned slot, const Bytes &data, st
     if (!allocation || allocation > ramSize - nextAddress)
         throw std::runtime_error("Bank allocation exceeds 2MiB AICA RAM after rounding.");
     
-    // get offset for next entry
-    auto offset = 32 + (writtenEntries * 32);
-    writtenEntries++;
-
-    // write type, slot, address, allocation
-    std::memcpy(bytes.data() + offset, type.data(), 4);
-    bytes[offset + 4] = static_cast<std::uint8_t>(slot);
-    Put(offset + 8, nextAddress);
-    Put(offset + 12, allocation);
-    
-    // payload offset and size
-    Put(offset + 16, data.empty() ? 0xffffffffu : static_cast<std::uint32_t>(bytes.size()));
-    Put(offset + 20, data.empty() ? 0xffffffffu : size);
-
-    // append payload
-    bytes.insert(bytes.end(), data.begin(), data.end());
+    std::optional<Bytes> payload;
+    if (!data.empty())
+        payload = data;
+    entries.push_back({id, mapAddress, {nextAddress, allocation}, std::move(payload)});
     nextAddress += allocation;
-}
-
-Bytes MltBuilder::Finish() {
-    if (finished)
-        throw std::logic_error("MLT builder has already finished.");
-    if (writtenEntries != expectedEntries)
-        throw std::logic_error("Incomplete MLT layout.");
-    finished = true;
-    return std::move(bytes);
 }
 
 } // namespace
 
-MltLayout::MltLayout(Bytes data) : bytes(std::move(data)), entries(parseMlt(bytes)) {}
+RamLayout RamLayout::FromMlt(const Bytes &bytes) {
+    return RamLayout(parseMlt(bytes));
+}
 
-// construct an MLT from the chosen loose banks
-MltLayout MltLayout::FromMpbs(const std::vector<Bytes> &banks, const Bytes &fpb, const Bytes &fob) {
+// construct a RAM layout from the chosen loose banks
+RamLayout RamLayout::FromBanks(const std::vector<Bytes> &banks, const Bytes &fpb, const Bytes &fob) {
     if (banks.empty() || banks.size() > 16)
         throw std::runtime_error("Choose between 1 and 16 MPB files.");
     
@@ -249,26 +200,28 @@ MltLayout MltLayout::FromMpbs(const std::vector<Bytes> &banks, const Bytes &fpb,
         validateFob(fob);
     
     auto count = banks.size() + !fpb.empty() + !fob.empty() + (work != 0);
-    MltBuilder builder(static_cast<unsigned>(count));
+    std::vector<LayoutEntry> entries;
+    entries.reserve(count);
+    std::uint32_t nextAddress = 0x18000;
     
     // DSP work RAM header entry (per mltmake)
     if (work)
-        builder.Add("SFPW", 0, {}, work);
+        addBank(entries, nextAddress, {ResourceType::FPW, 0}, areaMap::fpw, {}, work);
     
     // add each MPB
     for (unsigned i = 0; i < banks.size(); ++i) {
         if (!isMpb(banks[i]))
             throw std::runtime_error(
                 "Choose an MPB here, not an FPB or other file.");
-        builder.Add("SMPB", i, banks[i]);
+        addBank(entries, nextAddress, {ResourceType::MPB, i}, areaMap::mpb + i * areaMap::entrySize, banks[i]);
     }
 
     // add FPB/FOB if present
     if (!fpb.empty())
-        builder.Add("SFPB", 0, fpb);
+        addBank(entries, nextAddress, {ResourceType::FPB, 0}, areaMap::fpb, fpb);
     if (!fob.empty())
-        builder.Add("SFOB", 0, fob);
+        addBank(entries, nextAddress, {ResourceType::FOB, 0}, areaMap::fob, fob);
     
-    return MltLayout(builder.Finish());
+    return RamLayout(std::move(entries));
 }
 } // namespace manatee

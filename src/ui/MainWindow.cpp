@@ -70,16 +70,16 @@ unsigned MainWindow::SelectedSlot() const {
     return slots[index];
 }
 
-void MainWindow::UpdateBanks(const std::vector<MltEntry> &entries, const BankSource &source) {
+void MainWindow::UpdateBanks(const std::vector<LayoutEntry> &entries, const BankSource &source) {
     SendMessageW(banks, CB_RESETCONTENT, 0, 0);
     slots.clear();
     for (const auto &e : entries)
-        if (e.mpb) {
-            auto label = L"MPB " + std::to_wstring(e.bank) + (e.stored ? L"" : L" (empty)");
-            if (e.bank < source.Mpbs().size())
-                label += L" - " + source.Mpbs()[e.bank].filename().wstring();
+        if (e.id.type == ResourceType::MPB) {
+            auto label = L"MPB " + std::to_wstring(e.id.slot) + (e.payload ? L"" : L" (empty)");
+            if (e.id.slot < source.Mpbs().size())
+                label += L" - " + source.Mpbs()[e.id.slot].filename().wstring();
             SendMessageW(banks, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-            slots.push_back(e.bank);
+            slots.push_back(e.id.slot);
         }
 }
 

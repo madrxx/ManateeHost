@@ -1,7 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "app/BankSource.hpp"
-#include "banks/MltLayout.hpp"
+#include "banks/RamLayout.hpp"
 #include <functional>
 
 namespace manatee {
@@ -34,7 +34,7 @@ class MainWindow {
     bool HasSlots() const { return !slots.empty(); }
     unsigned FirstSlot() const { return slots.front(); }
     bool IsBankControl(HWND control) const { return control == banks; }
-    void UpdateBanks(const std::vector<MltEntry> &entries, const BankSource &source);
+    void UpdateBanks(const std::vector<LayoutEntry> &entries, const BankSource &source);
     void ShowSelectedSlot(unsigned slot);
     void RefreshSource(const BankSource &source, bool ready, bool hasEngine, bool hasDriver);
 

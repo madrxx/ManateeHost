@@ -84,8 +84,8 @@ void AudioPlayer::AllNotesOff() {
         engine->AllNotesOff();
 }
 
-const std::vector<MltEntry> &AudioPlayer::Entries() const {
-    static const std::vector<MltEntry> empty;
+const std::vector<LayoutEntry> &AudioPlayer::Entries() const {
+    static const std::vector<LayoutEntry> empty;
     return engine ? engine->Entries() : empty;
 }
 

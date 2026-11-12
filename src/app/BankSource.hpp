@@ -1,6 +1,7 @@
 #pragma once
 #include "support/binaryFile.hpp"
-#include "banks/MltLayout.hpp"
+#include "banks/Mpb.hpp"
+#include "banks/RamLayout.hpp"
 #include <utility>
 
 namespace manatee {
@@ -57,14 +58,14 @@ class BankSource {
             RequireLoose();
             mpbPaths.at(slot) = std::move(path);
         }
-        MltLayout MakeLayout() const {
+        RamLayout MakeLayout() const {
             if (sourceMode == Mode::MltBundle)
-                return MltLayout(readFile(mltPath));
+                return RamLayout::FromMlt(readFile(mltPath));
             RequireLoose();
             std::vector<Bytes> banks;
             for (const auto &path : mpbPaths)
                 banks.push_back(readFile(path));
-            return MltLayout::FromMpbs(banks, fpbPath.empty() ? Bytes{} : readFile(fpbPath), fobPath.empty() ? Bytes{} : readFile(fobPath));
+            return RamLayout::FromBanks(banks, fpbPath.empty() ? Bytes{} : readFile(fpbPath), fobPath.empty() ? Bytes{} : readFile(fobPath));
         }
 
     private:

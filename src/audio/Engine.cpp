@@ -1,9 +1,11 @@
 // Adapted from blackopsrepl/aitdtnn-pc-overhaul's audio-restoration/src/audio_renderer.cpp (GPLv3)
 #include "audio/Engine.hpp"
-#include "banks/MltLayout.hpp"
+#include "banks/Mpb.hpp"
+#include "manatee/AreaMap.hpp"
 #include <array>
 #include <stdexcept>
 #include <algorithm>
+#include <utility>
 
 // Highly Theoretical
 extern "C" {
@@ -36,14 +38,6 @@ constexpr unsigned commandSize = 16;
 constexpr std::uint8_t totalVolumeCommand = 0x81;
 constexpr std::uint8_t mixerChangeCommand = 0x82;
 constexpr std::uint8_t effectChangeCommand = 0x84;
-
-// manatee area map, based on manatools
-constexpr std::uint32_t areaMapBase = 0x14000;
-constexpr std::uint32_t effectBankMap = 0x14200;
-constexpr std::uint32_t mixerBankMap = 0x14280;
-
-// range we clear - from start of area map to end of second MDB slot
-constexpr unsigned areaMapSize = 0x2a0;
 
 // emulator
 constexpr unsigned cyclesPerFrame = 128;
@@ -92,7 +86,7 @@ void Engine::Settle(unsigned frames) {
     }
 }
 
-Engine::Engine(const Bytes &driver, const MltLayout &layout) : mltEntries(layout.Entries()) {
+Engine::Engine(const Bytes &driver, RamLayout initialLayout) : layout(std::move(initialLayout)) {
     if (driver.size() < driverHeaderSize + 4 ||
         driver.size() > maxDriverPayload + driverHeaderSize || !signature(driver, "SDRV")) {
         throw std::runtime_error("Expected a SDRV manatee.drv file.");
@@ -119,24 +113,24 @@ Engine::Engine(const Bytes &driver, const MltLayout &layout) : mltEntries(layout
     Settle(bootFrames);
 
     // clearing map range before we install our layout
-    const std::array<std::uint8_t, areaMapSize> emptyMap{};
-    Upload(areaMapBase, emptyMap.data(), static_cast<std::uint32_t>(emptyMap.size()));
+    const std::array<std::uint8_t, areaMap::size> emptyMap{};
+    Upload(areaMap::base, emptyMap.data(), static_cast<std::uint32_t>(emptyMap.size()));
 
     // install each layout entry
-    for (const auto &entry : mltEntries) {
-        dcsound_setword(State(), entry.map, entry.address);
-        dcsound_setword(State(), entry.map + 4, entry.allocation);
-        if (entry.stored)
-            Upload(entry.address, layout.Data().data() + entry.offset, entry.size);
+    for (const auto &entry : layout.entries) {
+        dcsound_setword(State(), entry.mapAddress, entry.allocation.address);
+        dcsound_setword(State(), entry.mapAddress + 4, entry.allocation.size);
+        if (entry.payload)
+            Upload(entry.allocation.address, entry.payload->data(), static_cast<std::uint32_t>(entry.payload->size()));
     }
 
     // check if there's a stored FPB / FOB and set initial prog/mixer
-    for (const auto &entry : mltEntries) {
-        if (!entry.stored)
+    for (const auto &entry : layout.entries) {
+        if (!entry.payload)
             continue;
-        if (entry.map == effectBankMap)
+        if (entry.id.type == ResourceType::FPB && entry.id.slot == 0)
             Command(1, effectChangeCommand, 0);
-        else if (entry.map == mixerBankMap)
+        else if (entry.id.type == ResourceType::FOB && entry.id.slot == 0)
             Command(0, mixerChangeCommand, 0);
     }
     
@@ -178,12 +172,12 @@ void Engine::InputMidi(std::uint8_t status, std::uint8_t d1, std::uint8_t d2) {
 
 // returns how many programs are in the MPB at the given slot
 unsigned Engine::ProgramCount(unsigned bank) {
-    for (const auto &entry : mltEntries) {
-        if (entry.mpb && entry.bank == bank && entry.stored) {
-            if (entry.size < mpbProgramCountOffset + 4)
+    for (const auto &entry : layout.entries) {
+        if (entry.id.type == ResourceType::MPB && entry.id.slot == bank && entry.payload) {
+            if (entry.payload->size() < mpbProgramCountOffset + 4)
                 return 0;
 
-            auto count = dcsound_getword(State(), entry.address + mpbProgramCountOffset);
+            auto count = dcsound_getword(State(), entry.allocation.address + mpbProgramCountOffset);
             return std::min(count, 128u);
         }
     }
@@ -213,8 +207,8 @@ void Engine::AllNotesOff() {
 // switches engine to a loaded MPB slot and then sets every channel program to 0
 void Engine::SelectBank(unsigned bank) {
     bool found = false;
-    for (const auto &entry : mltEntries) {
-        if (entry.mpb && entry.bank == bank && entry.stored) {
+    for (const auto &entry : layout.entries) {
+        if (entry.id.type == ResourceType::MPB && entry.id.slot == bank && entry.payload) {
             found = true;
             break;
         }
@@ -233,9 +227,9 @@ void Engine::SelectBank(unsigned bank) {
 
 // swaps MPB into existing slot in AICA RAM
 void Engine::ReplaceBank(unsigned bank, const Bytes &mpb) {
-    MltEntry *entry = nullptr;
-    for (auto &candidate : mltEntries) {
-        if (candidate.mpb && candidate.bank == bank) {
+    LayoutEntry *entry = nullptr;
+    for (auto &candidate : layout.entries) {
+        if (candidate.id.type == ResourceType::MPB && candidate.id.slot == bank) {
             entry = &candidate;
             break;
         }
@@ -244,8 +238,9 @@ void Engine::ReplaceBank(unsigned bank, const Bytes &mpb) {
         throw std::runtime_error("No MPB slot exists with that bank number.");
     if (!isMpb(mpb))
         throw std::runtime_error("The replacement file is not a recognised MPB.");
-    if (mpb.size() > entry->allocation)
+    if (mpb.size() > entry->allocation.size)
         throw std::runtime_error("The replacement MPB is too large for this slot's allocation.");
+    Bytes replacement = mpb;
     
     // stop voices before overwriting memory they may be reading
     for (unsigned channel = 0; channel < midiChannels; ++channel) {
@@ -255,9 +250,8 @@ void Engine::ReplaceBank(unsigned bank, const Bytes &mpb) {
     Settle(commandSettleFrames);
 
     // upload and select new mpb
-    Upload(entry->address, mpb.data(), static_cast<std::uint32_t>(mpb.size()));
-    entry->stored = true;
-    entry->size = static_cast<std::uint32_t>(mpb.size());
+    Upload(entry->allocation.address, replacement.data(), static_cast<std::uint32_t>(replacement.size()));
+    entry->payload = std::move(replacement);
     SelectBank(bank);
 }
 } // namespace manatee
