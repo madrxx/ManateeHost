@@ -1,6 +1,6 @@
 #include "app/Diagnostics.hpp"
 #include <windows.h>
-#include <winrt/base.h>
+#include "support/windowsEncoding.hpp"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -15,7 +15,7 @@ void Diagnostics::Open() {
     }
     wchar_t executable[32768]{};
     if (GetModuleFileNameW(nullptr, executable, 32768))
-        Log("Executable: " + winrt::to_string(executable));
+        Log("Executable: " + toUtf8(executable));
     Log("Process ID: " + std::to_string(GetCurrentProcessId()));
 }
 void Diagnostics::Log(const std::string &message) {

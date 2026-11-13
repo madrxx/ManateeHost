@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <mutex>
 #include <span>
-#include <libremidi/cmidi2.hpp>
 namespace manatee {
 // one MIDI 1.0 channel message
 struct Event {
@@ -21,56 +20,26 @@ class MidiQueue {
         std::atomic<bool> accepting{false}; // controls whether new events should be added or discarded
         std::atomic<bool> overflow{false}; // set when an event is dropped due to a full queue
 
-        // takes UMP (MIDI 1 or 2) packets and converts them to MIDI 1 bytes for our queue
-        void PushUmp(std::span<const std::uint32_t> words) {
-            if (words.empty())
+        // takes one MIDI 1.0 channel message and adds it to queue
+        void PushMidi(std::span<const std::uint8_t> bytes) {
+            // reject empty
+            if (bytes.empty())
                 return;
             
-            // read message type from top 4 bits
-            const auto type = words[0] >> 28;
+            // get message kind from upper 4 bits
+            auto kind = bytes[0] & 0xf0;
 
-            // we only want group 0 and we only want type 2 (MIDI 1.0 channel msg) or type 4 (MIDI 2.0 channel msg)
-            if (((words[0] >> 24) & 15) != 0 || (type != 2 && type != 4))
+            // expected length
+            auto size = (kind == 0xc0 || kind == 0xd0) ? 2u : 3u;
+
+            // reject if
+            if (bytes.size() != size || // wrong size
+                bytes[0] < 0x80 || bytes[0] >= 0xf0 || // status isn't a channel message
+                bytes[1] > 127 || // out of range
+                (size == 3 && bytes[2] > 127)) // out of range
                 return;
-            
-            // should be 1 32-bit UMP word if type 2, or 2 32-bit UMP words if type 4
-            if (words.size() != (type == 2 ? 1u : 2u))
-                return;
-            
-            // prep for conversion
-            std::uint8_t bytes[32]{}; // converted MIDI 1 buffer
-            cmidi2_midi_conversion_context context;
-            cmidi2_midi_conversion_context_initialize(&context);
-
-            // output buffer for cmidi2
-            context.midi1 = bytes;
-            context.midi1_num_bytes = sizeof(bytes);
-
-            // input UMP packet for cmidi2 (which doesn't actually mutate this const)
-            context.ump = const_cast<std::uint32_t *>(words.data());
-            context.ump_num_bytes = words.size_bytes();
-            context.skip_delta_time = true; // this isn't a MIDI file, it's a realtime stream, so we don't need delta-time info
-
-            // convert, or discard packet if cmidi2 reports a conversion error
-            if (cmidi2_convert_ump_to_midi1(&context) != CMIDI2_CONVERSION_RESULT_OK)
-                return;
-            
-            // advance through bytes - looping because 1 UMP message can convert to multiple MIDI 1.0 messages
-            for (std::size_t i = 0; i < context.midi1_proceeded_bytes;) {
-                auto status = bytes[i];
-                auto kind = status & 0xf0;
-                auto size = (kind == 0xc0 || kind == 0xd0) ? 2u : 3u;
                 
-                // stop if
-                if (status < 0x80 || status >= 0xf0 || // stop if status isn't a channel message
-                    i + size > context.midi1_proceeded_bytes) // or if there's not enough output bytes for the whole message
-                    return;
-                Push({
-                    status,
-                    bytes[i + 1], // data 1
-                    static_cast<std::uint8_t>(size == 3 ? bytes[i + 2] : 0)}); // data 2 (or 0 if N/A)
-                i += size;
-            }
+            Push({bytes[0], bytes[1], static_cast<std::uint8_t>(size == 3 ? bytes[2] : 0)});
         }
 
         void Push(Event e) {

@@ -174,7 +174,7 @@ void MainWindow::Create(HINSTANCE instance, int show, MessageHandler handler) {
     Widget(L"BUTTON", L"All notes off", WS_TABSTOP, 10, 148, 155, 30, AllNotesOff);
     Widget(L"BUTTON", L"Reload files", WS_TABSTOP, 175, 148, 155, 30, Reload);
 
-    statusLabel = Widget(L"STATIC", L"Starting MIDI and audio…", SS_LEFT, 10, 188, 320, 70);
+    statusLabel = Widget(L"STATIC", L"Starting...", SS_LEFT, 10, 188, 320, 70);
 
     ShowWindow(window, show == SW_HIDE ? SW_SHOWNORMAL : show);
     UpdateWindow(window);

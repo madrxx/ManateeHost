@@ -1,4 +1,5 @@
 #include "app/App.hpp"
+#include "support/windowsEncoding.hpp"
 #include <shellapi.h>
 #include <cstdio>
 #include <filesystem>
@@ -13,53 +14,125 @@ BOOL WINAPI stopFromConsole(DWORD event) {
         return FALSE;
     return PostThreadMessageW(consoleThread, WM_CLOSE, 0, 0);
 }
+
+void usage() {
+    std::fprintf(stderr,
+        "Usage: ManateeHost --headless manatee.drv bundle.mlt|bank.mpb (start without GUI)\n"
+        "       ManateeHost --port \"port name\" (override MIDI input port)\n"
+        "       ManateeHost --list-ports (list available ports)\n"
+        "Default MIDI input: ManateeHost (create in loopMIDI).\n");
+}
+
+// UTF-16 for console, UTF-8 for file/pipe
+void printInput(const std::string &name) {
+    auto handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+
+    if (GetConsoleMode(handle, &mode)) {
+        auto text = manatee::fromUtf8(name + "\n");
+        DWORD written;
+        if (!WriteConsoleW(handle, text.data(), static_cast<DWORD>(text.size()), &written, nullptr))
+            throw std::runtime_error("Can't write MIDI input list.");
+    } else {
+        std::printf("%s\n", name.c_str());
+    }
+}
 } // namespace
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    // normal launch has 1 argument (the exe name). headless launch has 4 args (flag, driver and bank)
     int count = 0;
     auto args = CommandLineToArgvW(GetCommandLineW(), &count);
-    
-    // if can't get args, something weird happened
     if (!args)
         return 2;
-    
-    // create the app object, which owns MidiWorker and other state
-    manatee::App app;
-    
-    // if no args, run the GUI version
-    if (count == 1) {
-        return app.Run(instance, show);
+
+    // attach to parent console, preserve stdout/stderr redirect
+    if (count > 1) {
+        const auto outputType = GetFileType(GetStdHandle(STD_ERROR_HANDLE));
+        const auto stdoutType = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE *stream;
+            if (outputType != FILE_TYPE_DISK && outputType != FILE_TYPE_PIPE)
+                freopen_s(&stream, "CONOUT$", "w", stderr);
+            if (stdoutType != FILE_TYPE_DISK && stdoutType != FILE_TYPE_PIPE)
+                freopen_s(&stream, "CONOUT$", "w", stdout);
+        }
     }
 
-    // use the parent console for errors unless stderr was redirected to a file or pipe
-    const auto outputType = GetFileType(GetStdHandle(STD_ERROR_HANDLE));
-    if (AttachConsole(ATTACH_PARENT_PROCESS) && outputType != FILE_TYPE_DISK &&
-        outputType != FILE_TYPE_PIPE) {
-        FILE *stream;
-        freopen_s(&stream, "CONOUT$", "w", stderr);
+
+    std::filesystem::path driver, bank;
+    std::wstring inputName = L"ManateeHost";
+    
+    bool valid = true, headless = false, inputSpecified = false, listInputs = false, help = false;
+
+    for (int i = 1; i < count && valid; ++i) {
+        const std::wstring_view arg(args[i]);
+        if (arg == L"--port" && // next param is port name
+                !inputSpecified &&
+                i + 1 < count &&
+                args[i + 1][0]) {
+            inputName = args[++i];
+            inputSpecified = true;
+        } else if (arg == L"--headless" && // next two params are driver and bank
+                !headless &&
+                i + 2 < count &&
+                args[i + 1][0] &&
+                args[i + 2][0]) {
+            driver = args[++i];
+            bank = args[++i];
+            headless = true;
+        } else if (arg == L"--list-ports" && count == 2) {
+            listInputs = true;
+        } else if (arg == L"--help" && count == 2) {
+            help = true;
+        } else {
+            valid = false;
+        }
     }
-    // if not headless, or missing driver or bank, print usage and exit
-    if (count != 4 || std::wstring_view(args[1]) != L"--headless" || !args[2][0] || !args[3][0]) {
-        std::fprintf(stderr, "Usage: ManateeHost --headless manatee.drv bank.mpb|bundle.mlt\n");
+    LocalFree(args);
+
+    if (help) {
+        usage();
+        return 0;
+    }
+    if (!valid) {
+        usage();
         return 2;
     }
-    // construct paths from the arguments
-    std::filesystem::path driver(args[2]), bank(args[3]);
 
-    consoleThread = GetCurrentThreadId();
+    try {
+        if (listInputs) {
+            const auto names = manatee::MidiWorker::Inputs();
+            for (const auto &name : names)
+                printInput(name);
+            if (names.empty())
+                std::fprintf(stderr, "No MIDI inputs found. Start loopMIDI and create a port.\n");
+            return 0;
+        }
 
-    // create message queue so Ctrl+C can be handled
-    MSG message{};
-    PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+        // owns midi worker/queue, bank source and window
+        manatee::App app;
 
-    // register Ctrl+C handler
-    if (!SetConsoleCtrlHandler(stopFromConsole, TRUE)) {
-        std::fprintf(stderr, "Headless mode requires a terminal with Ctrl+C support.\n");
-        return 2;
+        const auto input = manatee::toUtf8(inputName);
+        if (!headless)
+            return app.Run(instance, show, {}, {}, input); // run GUI app
+
+        consoleThread = GetCurrentThreadId();
+        MSG message{};
+        PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+
+        // register Ctrl+C handler
+        if (!SetConsoleCtrlHandler(stopFromConsole, TRUE)) {
+            std::fprintf(stderr, "Headless mode requires a terminal with Ctrl+C support.\n");
+            return 2;
+        }
+
+        const auto result = app.Run(instance, show, driver, bank, input); // run headless app
+
+        // unregister Ctrl+C handler before exiting
+        SetConsoleCtrlHandler(stopFromConsole, FALSE);
+        return result;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "%s\n", error.what());
+        return 1;
     }
-    // run the app headless
-    const auto result = app.Run(instance, show, driver, bank);
-    // unregister handler Ctrl+C handler before exiting
-    SetConsoleCtrlHandler(stopFromConsole, FALSE);
-    return result;
 }

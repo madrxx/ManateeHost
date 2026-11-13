@@ -1,31 +1,18 @@
 #include "app/App.hpp"
 #include "support/binaryFile.hpp"
-#include <winrt/base.h>
+#include "support/windowsEncoding.hpp"
 #include <memory>
-#include <sstream>
-#include <iomanip>
 #include <cstdio>
 
 namespace manatee {
 
-// takes a WinRT error and returns a readable string with the HRESULT code and message
-namespace {
-std::string winrtError(const winrt::hresult_error &e) {
-    std::ostringstream out;
-    out << "HRESULT 0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
-        << static_cast<std::uint32_t>(e.code().value) << ": " << winrt::to_string(e.message());
-    return out.str();
-}
-} // namespace
-
-int App::Run(HINSTANCE instance, int show, const std::filesystem::path &driver, const std::filesystem::path &bank) {
+int App::Run(HINSTANCE instance, int show, const std::filesystem::path &driver, const std::filesystem::path &bank, std::string midiInput) {
     headless = !driver.empty();
+    midiInputName = std::move(midiInput);
 
-    // state needed for cleanup
-    bool mainApartment = false;
+    // single instance guard
     HANDLE singleInstance = nullptr;
     try {
-        // single instance guard
         singleInstance = CreateMutexW(nullptr, FALSE, L"Local\\ManateeHost.SingleInstance");
         auto mutexError = GetLastError();
         if (!singleInstance) {
@@ -45,12 +32,7 @@ int App::Run(HINSTANCE instance, int show, const std::filesystem::path &driver, 
 
         diagnostics.Open();
 
-        diagnostics.Stage("initialising winrt");
-        // prepare main thread to use WinRT APIs
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        mainApartment = true;
-
-        if (headless) { // save driver path to class, open bank
+        if (headless) {
             diagnostics.Stage("loading headless source");
             driverPath = driver;
             source.OpenFile(bank);
@@ -95,13 +77,10 @@ int App::Run(HINSTANCE instance, int show, const std::filesystem::path &driver, 
                 "GetMessage failed; terminating");
             TerminateProcess(GetCurrentProcess(), 1);
         }
-    } catch (const winrt::hresult_error &e) { // WinRT error
-        StartupError(winrtError(e));
-        exitCode = 1;
-    } catch (const std::exception &e) { // standard C++ error
+    } catch (const std::exception &e) {
         StartupError(e.what());
         exitCode = 1;
-    } catch (...) { // catch-all
+    } catch (...) {
         StartupError("Unknown exception.");
         exitCode = 1;
     }
@@ -114,11 +93,11 @@ int App::Run(HINSTANCE instance, int show, const std::filesystem::path &driver, 
         TerminateProcess(GetCurrentProcess(), 1);
         std::terminate();
     }
+
     // release resources
     player.Shutdown();
     window.Destroy();
-    if (mainApartment)
-        winrt::uninit_apartment();
+
     if (singleInstance)
         CloseHandle(singleInstance);
     return exitCode;
@@ -131,6 +110,7 @@ void App::StartMidiWorker() {
     const auto thread = GetCurrentThreadId();
     midiWorker.Start(
         queue,
+        midiInputName,
         [target, thread](MidiWorker::Notice notice) { // notification callback
             const auto message = notice == MidiWorker::Notice::Error   ? errorMessage
                                : notice == MidiWorker::Notice::Ready   ? readyMessage
@@ -161,7 +141,7 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == stageMessage) {
         if (closing) {
             auto text = "Closing: " + midiWorker.Stage() + (headless ? ". Ctrl+C again to force exit." : ". Close again to force exit.");
-            std::wstring wide(text.begin(), text.end());
+            auto wide = fromUtf8(text);
             Status(wide.c_str());
             if (midiWorker.Done())
                 FinishClose();
@@ -174,7 +154,7 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             Status(L"MIDI ready. Load manatee.drv, then MPBs or an MLT.");
         } else {
             auto text = "Starting: " + midiWorker.Stage();
-            std::wstring wide(text.begin(), text.end());
+            auto wide = fromUtf8(text);
             Status(wide.c_str());
         }
         RefreshSourceUi();
@@ -199,7 +179,7 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == errorMessage) {
         const auto failure = midiWorker.GetFailure();
         if (!closing) {
-            Status(L"MIDI startup failed. See the startup log.");
+            Status(L"MIDI input failed. See the log.");
             StartupError(failure.message, failure.stage);
             if (headless) {
                 exitCode = 1;
@@ -210,10 +190,10 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     }
     if (message == WM_CLOSE) {
         if (closing && !midiWorker.Done()) {
-            // blocked SDK call - offer force exit as a last resort
+            // input has not finished closing - offer force exit as a last resort
             if (headless ||
                 MessageBoxW(hwnd,
-                            L"Windows MIDI Services has not returned. Force exit ManateeHost?",
+                            L"MIDI input has not closed. Force exit ManateeHost?",
                             L"Force exit", MB_YESNO | MB_ICONWARNING) == IDYES)
                 TerminateProcess(GetCurrentProcess(), 1);
             return 0;
@@ -225,8 +205,8 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             FinishClose();
         else
             Status(headless
-                       ? L"Closing: waiting for Windows MIDI Services. Ctrl+C again to force exit."
-                       : L"Closing: waiting for Windows MIDI Services. Close again to force exit.");
+                       ? L"Closing: waiting for MIDI input. Ctrl+C again to force exit."
+                       : L"Closing: waiting for MIDI input. Close again to force exit.");
         return 0;
     }
     if (message == WM_COMMAND && !headless) {
@@ -235,7 +215,7 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         } catch (const std::exception &e) {
             player.Stop();
             Status(L"Stopped. Fix the selected files, then Reload.");
-            MessageBoxA(window.Handle(), e.what(), "ManateeHost", MB_OK | MB_ICONERROR);
+            MessageBoxW(window.Handle(), fromUtf8(e.what()).c_str(), L"ManateeHost", MB_OK | MB_ICONERROR);
         }
         return 0;
     }
@@ -246,7 +226,7 @@ LRESULT App::HandleMessage(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             return 0;
         if (midiWorker.Failed()) {
             RefreshSourceUi();
-            Status(L"MIDI connection failed. Close and reopen the app after checking Windows MIDI Services is running.");
+            Status(L"MIDI input failed. Check loopMIDI, then close and reopen the app.");
         } else if (player.Faulted())
             Status(L"Stopped: emulator error or MIDI queue overflow. Use Reload.");
         if (headless && (midiWorker.Failed() || player.Faulted())) {
@@ -420,23 +400,20 @@ void App::ShowSelectedSlot(unsigned slot) {
 
 void App::Status(const wchar_t *text) {
     if (headless)
-        std::fprintf(stderr, "%s\n", winrt::to_string(text).c_str());
+        std::fprintf(stderr, "%s\n", toUtf8(text).c_str());
     else
         window.Status(text);
 }
 
 void App::StartupError(const std::string &message, const std::string &savedStage) {
     auto failedStage = savedStage.empty() ? diagnostics.CurrentStage() : savedStage;
-    auto text = "Startup failed while " + failedStage + ".\n\n" + message;
-    if (failedStage.find("MIDI") != std::string::npos ||
-        failedStage.find("virtual") != std::string::npos)
-        text += "\n\nManateeHost requires Windows 11 25H2 or later with MIDI Services enabled. Keep the generated .dll and .pri beside the .exe.";
+    auto text = "Failed while " + failedStage + ".\n\n" + message;
     diagnostics.Log(text);
     text += "\n\nDetails: %TEMP%\\ManateeHost-startup.log";
     if (headless)
         std::fprintf(stderr, "%s\n", text.c_str());
     else
-        MessageBoxA(window.Handle(), text.c_str(), "ManateeHost", MB_OK | MB_ICONERROR);
+        MessageBoxW(window.Handle(), fromUtf8(text).c_str(), L"ManateeHost", MB_OK | MB_ICONERROR);
 }
 
 #pragma endregion

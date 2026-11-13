@@ -6,10 +6,11 @@
 #include <thread>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace manatee {
 
-// owns the MIDI apartment and every MIDI object
+// owns the MIDI input and callbacks
 class MidiWorker {
     public:
         enum class Notice { Progress, Ready, Error, Finished };
@@ -34,7 +35,8 @@ class MidiWorker {
         std::string Stage() const;
         void RequestStop();
         bool JoinIfDone();
-        void Start(MidiQueue &queue, Notify notify, Trace trace);
+        static std::vector<std::string> Inputs();
+        void Start(MidiQueue &queue, std::string inputName, Notify notify, Trace trace);
 
     private:
         std::thread thread;
@@ -42,7 +44,7 @@ class MidiWorker {
         std::condition_variable wake;
         bool stopRequested = false;
         bool hasStarted = false;
-        std::atomic<bool> isReady{false}, hasFailed{false}, isDone{false};
+        std::atomic<bool> isReady{false}, hasFailed{false}, isDone{false}, inputWarning{false};
         std::string progress = "starting MIDI worker";
         Failure lastFailure;
 };

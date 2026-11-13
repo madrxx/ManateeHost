@@ -7,8 +7,11 @@
 namespace manatee {
 class App {
     public:
-        int Run(HINSTANCE instance, int show, const std::filesystem::path &driver = {},
-            const std::filesystem::path &bank = {});
+        int Run(HINSTANCE instance,
+            int show,
+            const std::filesystem::path &driver = {},
+            const std::filesystem::path &bank = {},
+            std::string midiInput = "ManateeHost");
 
     private:
         // lifecycle
@@ -37,6 +40,7 @@ class App {
         MainWindow window;
         BankSource source;
         std::filesystem::path driverPath;
+        std::string midiInputName;
         bool closing = false;
         bool headless = false;
         int exitCode = 0;
